@@ -766,6 +766,7 @@ class Stats {
   long iterations_;
   long range_deletions_;
   long covered_by_range_deletions_;
+  long ingests_;
   long errors_;
   long num_compact_files_succeed_;
   long num_compact_files_failed_;
@@ -791,6 +792,7 @@ class Stats {
     iterations_ = 0;
     range_deletions_ = 0;
     covered_by_range_deletions_ = 0;
+    ingests_ = 0;
     errors_ = 0;
     bytes_ = 0;
     seconds_ = 0;
@@ -814,6 +816,7 @@ class Stats {
     iterations_ += other.iterations_;
     range_deletions_ += other.range_deletions_;
     covered_by_range_deletions_ = other.covered_by_range_deletions_;
+    ingests_ += other.ingests_;
     errors_ += other.errors_;
     bytes_ += other.bytes_;
     seconds_ += other.seconds_;
@@ -879,6 +882,8 @@ class Stats {
 
   void AddCoveredByRangeDeletions(long n) { covered_by_range_deletions_ += n; }
 
+  void AddIngest() { ingests_++; }
+
   void AddErrors(long n) { errors_ += n; }
 
   void AddNumCompactFilesSucceed(long n) { num_compact_files_succeed_ += n; }
@@ -915,6 +920,7 @@ class Stats {
     fprintf(stdout, "%-12s: Deleted %ld key-ranges\n", "", range_deletions_);
     fprintf(stdout, "%-12s: Range deletions covered %ld keys\n", "",
             covered_by_range_deletions_);
+    fprintf(stdout, "%-12s: Ingested %ld times\n", "", ingests_);
 
     fprintf(stdout, "%-12s: Got errors %ld times\n", "", errors_);
     fprintf(stdout, "%-12s: %ld CompactFiles() succeed\n", "",
@@ -2233,11 +2239,19 @@ class StressTest {
         }
       }
 
-      std::vector<int64_t> rand_keys = GenerateKeys(rand_key);
+      // Note that lock, when non NULL, corresponds to rand_key and
+      // rand_column_family, which are the only elements in rand_keys and
+      // rand_column_families that will be passed to the various Test*()
+      // methods.
+      //
+      // CfConsistencyStressTest generates multiple column families for
+      // rand_column_families but returns false from ShouldAcquireMutexOnKey().
+      std::vector<int64_t> rand_keys{rand_key};
 
       if (FLAGS_ingest_external_file_one_in > 0 &&
           thread->rand.Uniform(FLAGS_ingest_external_file_one_in) == 0) {
         TestIngestExternalFile(thread, rand_column_families, rand_keys, lock);
+        continue;  // since lock may have been released.
       }
 
       if (FLAGS_backup_one_in > 0 &&
@@ -2392,10 +2406,6 @@ class StressTest {
     return {rand_column_family};
   }
 
-  virtual std::vector<int64_t> GenerateKeys(int64_t rand_key) const {
-    return {rand_key};
-  }
-
   virtual Status TestGet(ThreadState* thread,
       const ReadOptions& read_opts,
       const std::vector<int>& rand_column_families,
@@ -2411,22 +2421,26 @@ class StressTest {
       const std::vector<int>& rand_column_families,
       const std::vector<int64_t>& rand_keys) = 0;
 
+  // May release lock before returning.
   virtual Status TestPut(ThreadState* thread,
       WriteOptions& write_opts, const ReadOptions& read_opts,
       const std::vector<int>& cf_ids, const std::vector<int64_t>& keys,
       char (&value)[100], std::unique_ptr<MutexLock>& lock) = 0;
 
+  // May release lock before returning.
   virtual Status TestDelete(ThreadState* thread, WriteOptions& write_opts,
       const std::vector<int>& rand_column_families,
       const std::vector<int64_t>& rand_keys,
       std::unique_ptr<MutexLock>& lock) = 0;
 
+  // May release lock before returning.
   virtual Status TestDeleteRange(ThreadState* thread,
       WriteOptions& write_opts,
       const std::vector<int>& rand_column_families,
       const std::vector<int64_t>& rand_keys,
       std::unique_ptr<MutexLock>& lock) = 0;
 
+  // May release lock before returning.
   virtual void TestIngestExternalFile(
       ThreadState* thread, const std::vector<int>& rand_column_families,
       const std::vector<int64_t>& rand_keys,
@@ -3781,6 +3795,7 @@ class NonBatchedOpsStressTest : public StressTest {
       shared->Put(column_family, key, value, false /* pending */);
       ++key;
     }
+    thread->stats.AddIngest();
   }
 #endif  // ROCKSDB_LITE
 
